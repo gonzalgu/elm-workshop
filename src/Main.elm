@@ -25,6 +25,7 @@ main =
 
 type Msg
     = HandleLoginResp (Result Http.Error String)
+    | HandleRegisterResp (Result Http.Error String)
     | SetLoginPlayerId String
     | SetLoginPassword String
     | SetRegisterPlayerId String
@@ -36,14 +37,13 @@ type Msg
 
 type alias Model =
     { backendOK : Bool
-    , loginError : Maybe String
     , loginPlayerId : String
     , loginPassword : String
-    , loginToken : Maybe String
+    , loginToken : RemoteData String String
     , registerPlayerId : String
     , registerPassword : String
     , registerPasswordAgain : String
-    , registerToken : Maybe String
+    , registerToken : RemoteData String String
     , registerValidationIssues : List String
     }
 
@@ -51,14 +51,13 @@ type alias Model =
 init : flags -> ( Model, Cmd Msg )
 init _ =
     ( { backendOK = True
-      , loginError = Nothing
       , loginPlayerId = ""
       , loginPassword = ""
-      , loginToken = Nothing
+      , loginToken = RemoteData.NotAsked
       , registerPlayerId = ""
       , registerPassword = ""
       , registerPasswordAgain = ""
-      , registerToken = Nothing
+      , registerToken = RemoteData.NotAsked
       , registerValidationIssues = []
       }
     , Cmd.none
@@ -69,10 +68,16 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update action model =
     case action of
         HandleLoginResp (Ok token) ->
-            ( { model | backendOK = True, loginError = Nothing, loginToken = Just token }, Cmd.none )
+            ( { model | backendOK = True, loginToken = RemoteData.Success token }, Cmd.none )
 
         HandleLoginResp (Err err) ->
-            ( { model | loginError = Just "Backend login failed", backendOK = False }, Cmd.none )
+            ( { model | loginToken = RemoteData.Failure "Backend login failed" }, Cmd.none )
+
+        HandleRegisterResp (Ok token) ->
+            ( { model | backendOK = True, registerToken = RemoteData.Success token }, Cmd.none )
+
+        HandleRegisterResp (Err err) ->
+            ( { model | registerToken = RemoteData.Failure (Utils.httpErrorToStr err) }, Cmd.none )
 
         SetLoginPlayerId pid ->
             ( { model | loginPlayerId = pid }, Cmd.none )
@@ -95,10 +100,10 @@ update action model =
         RegisterSubmit ->
             case validateDbPlayer model of
                 Err problems ->
-                    ( { model | registerValidationIssues = problems, registerToken = Nothing }, Cmd.none )
+                    ( { model | registerValidationIssues = problems, registerToken = RemoteData.NotAsked }, Cmd.none )
 
                 Ok dbPlayer ->
-                    ( { model | registerValidationIssues = [], registerToken = Nothing }, BE.postApiPlayers dbPlayer HandleLoginResp )
+                    ( { model | registerValidationIssues = [], registerToken = RemoteData.Loading }, BE.postApiPlayers dbPlayer HandleRegisterResp )
 
 
 subscriptions : Model -> Sub Msg
@@ -108,34 +113,51 @@ subscriptions model =
 
 view : Model -> H.Html Msg
 view model =
-    case model.loginError of
-        Just err ->
-            H.div [] [ H.h1 [] [ H.text "OH NOES" ] ]
+    let
+        loading =
+            H.div [] [ H.h1 [] [ H.text "Standby" ] ]
 
-        Nothing ->
-            H.div []
-                [ H.div [ HA.class "login-box" ]
-                    [ H.h1 [] [ H.text "Login" ]
-                    , H.form [ HE.onSubmit LoginSubmit ]
-                        [ H.input
-                            [ HA.placeholder "Player Id"
-                            , HAA.ariaLabel "Player ID"
-                            , HE.onInput SetLoginPlayerId
+        ohno =
+            H.div [] [ H.h1 [] [ H.text "OH NOES" ] ]
+    in
+    H.div []
+        [ case model.loginToken of
+            RemoteData.Failure err ->
+                ohno
+
+            _ ->
+                H.div []
+                    [ H.div [ HA.class "login-box" ]
+                        [ H.h1 [] [ H.text "Login" ]
+                        , H.form [ HE.onSubmit LoginSubmit ]
+                            [ H.input
+                                [ HA.placeholder "Player Id"
+                                , HAA.ariaLabel "Player ID"
+                                , HE.onInput SetLoginPlayerId
+                                ]
+                                []
+                            , H.input
+                                [ HA.placeholder "Password"
+                                , HA.type_ "password"
+                                , HAA.ariaLabel "Password"
+                                , HE.onInput SetLoginPassword
+                                ]
+                                []
+                            , H.button
+                                [ HA.class "btn primary" ]
+                                [ H.text "Login" ]
                             ]
-                            []
-                        , H.input
-                            [ HA.placeholder "Password"
-                            , HA.type_ "password"
-                            , HAA.ariaLabel "Password"
-                            , HE.onInput SetLoginPassword
-                            ]
-                            []
-                        , H.button
-                            [ HA.class "btn primary" ]
-                            [ H.text "Login" ]
                         ]
                     ]
-                , H.div [ HA.class "login-box" ]
+        , case model.registerToken of
+            RemoteData.Failure err ->
+                ohno
+
+            RemoteData.Loading ->
+                loading
+
+            _ ->
+                H.div [ HA.class "login-box" ]
                     [ H.h1 [] [ H.text "Register" ]
                     , H.form [ HE.onSubmit RegisterSubmit ]
                         [ H.input
@@ -160,10 +182,10 @@ view model =
                             []
                         , H.button
                             [ HA.class "btn primary" ]
-                            [ H.text "Login" ]
+                            [ H.text "Register" ]
                         ]
                     ]
-                ]
+        ]
 
 
 validateDbPlayer : Model -> Result.Result (List String) BE.DbPlayer
