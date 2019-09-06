@@ -10,6 +10,7 @@ import Html.Events as HE
 import Http
 import RemoteData exposing (RemoteData)
 import Session
+import Time as Time
 import Utils
 
 
@@ -26,13 +27,17 @@ main =
 type Msg
     = HandleLoginResp (Result Http.Error String)
     | HandleRegisterResp (Result Http.Error String)
+    | HandleChatMessageResp (Result Http.Error ())
     | SetLoginPlayerId String
     | SetLoginPassword String
     | SetRegisterPlayerId String
     | SetRegisterPassword String
     | SetRegisterPasswordAgain String
+    | SetChatMessage String
     | LoginSubmit
     | RegisterSubmit
+    | ChatSubmit
+    | Tick Session.Player Time.Posix
 
 
 type alias Model =
@@ -45,6 +50,9 @@ type alias Model =
     , registerPasswordAgain : String
     , registerToken : RemoteData String String
     , registerValidationIssues : List String
+    , player : Maybe Session.Player
+    , chatMessage : String
+    , chatLines : List BE.ChatLine
     }
 
 
@@ -59,6 +67,9 @@ init _ =
       , registerPasswordAgain = ""
       , registerToken = RemoteData.NotAsked
       , registerValidationIssues = []
+      , player = Nothing
+      , chatMessage = ""
+      , chatLines = []
       }
     , Cmd.none
     )
@@ -68,16 +79,38 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update action model =
     case action of
         HandleLoginResp (Ok token) ->
-            ( { model | backendOK = True, loginToken = RemoteData.Success token }, Cmd.none )
+            ( { model
+                | backendOK = True
+                , loginToken = RemoteData.Success token
+                , player = Just (Session.Player model.loginPlayerId token)
+              }
+            , Cmd.none
+            )
 
         HandleLoginResp (Err err) ->
-            ( { model | loginToken = RemoteData.Failure "Backend login failed" }, Cmd.none )
+            ( { model
+                | loginToken = RemoteData.Failure "Backend login failed"
+              }
+            , Cmd.none
+            )
 
         HandleRegisterResp (Ok token) ->
-            ( { model | backendOK = True, registerToken = RemoteData.Success token }, Cmd.none )
+            ( { model
+                | backendOK = True
+                , registerToken = RemoteData.Success token
+                , player = Just (Session.Player model.registerPlayerId token)
+              }
+            , Cmd.none
+            )
 
         HandleRegisterResp (Err err) ->
             ( { model | registerToken = RemoteData.Failure (Utils.httpErrorToStr err) }, Cmd.none )
+
+        HandleChatMessageResp (Ok ()) ->
+            ( model, Cmd.none )
+
+        HandleChatMessageResp (Err err) ->
+            ( model, Cmd.none )
 
         SetLoginPlayerId pid ->
             ( { model | loginPlayerId = pid }, Cmd.none )
@@ -94,6 +127,9 @@ update action model =
         SetRegisterPasswordAgain pwd ->
             ( { model | registerPasswordAgain = pwd }, Cmd.none )
 
+        SetChatMessage msg ->
+            ( { model | chatMessage = msg }, Cmd.none )
+
         LoginSubmit ->
             ( model, BE.postApiLogin (BE.DbPlayer model.loginPlayerId model.loginPassword) HandleLoginResp )
 
@@ -105,14 +141,77 @@ update action model =
                 Ok dbPlayer ->
                     ( { model | registerValidationIssues = [], registerToken = RemoteData.Loading }, BE.postApiPlayers dbPlayer HandleRegisterResp )
 
+        ChatSubmit ->
+            ( model, chatSubmit model )
+
+        Tick player time ->
+            ( model, Cmd.none )
+
+
+chatSubmit : Model -> Cmd Msg
+chatSubmit model =
+    case model.player of
+        Nothing ->
+            Cmd.none
+
+        Just player ->
+            BE.postApiLobby player.token model.chatMessage HandleChatMessageResp
+
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Sub.none
+    case model.player of
+        Nothing ->
+            Sub.none
+
+        Just p ->
+            Time.every 2000 (Tick p)
 
 
 view : Model -> H.Html Msg
 view model =
+    case model.player of
+        Nothing ->
+            loggedOutView model
+
+        Just p ->
+            loggedInView p model
+
+
+loggedInView : Session.Player -> Model -> H.Html Msg
+loggedInView player model =
+    -- This is just some boilerplate markup
+    H.div [ HA.class "lobby" ]
+        [ H.div [ HA.class "lobby-games" ]
+            [ H.h1 [] [ H.text "Lobby" ]
+            ]
+        , H.div [ HA.class "chatbox-container" ]
+            [ H.h2 [] [ H.text "Chat Lobby" ]
+            , H.div [ HA.id "chatbox", HA.class "chatbox" ] (List.map chatLineView model.chatLines)
+            , H.form [ HE.onSubmit ChatSubmit ]
+                [ H.ul []
+                    [ H.li [ HA.class "chat-message" ]
+                        [ H.input
+                            [ HA.placeholder "type a chat message"
+                            , HA.class "chat-message-input"
+                            , HAA.ariaLabel "Enter Chat Message"
+                            , HE.onInput SetChatMessage
+                            ]
+                            []
+                        ]
+                    , H.li []
+                        [ H.button
+                            [ HA.class "btn primary" ]
+                            [ H.text "send" ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+
+loggedOutView : Model -> H.Html Msg
+loggedOutView model =
     let
         loading =
             H.div [] [ H.h1 [] [ H.text "Standby" ] ]
@@ -198,3 +297,11 @@ validateDbPlayer model =
 
     else
         Ok (BE.DbPlayer model.registerPlayerId model.registerPassword)
+
+
+chatLineView : BE.ChatLine -> H.Html Msg
+chatLineView cl =
+    H.div []
+        [ H.p [] [ H.text cl.chatLinePlayerId ]
+        , H.p [] [ H.text cl.chatLineText ]
+        ]
